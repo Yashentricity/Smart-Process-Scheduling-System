@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Smart Process Scheduling System</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial; background: #0f172a; color: white; margin: 0; padding: 20px; }
+    h1 { text-align: center; }
+    .container { display: flex; gap: 20px; flex-wrap: wrap; }
+    .card { background: #1e293b; padding: 15px; border-radius: 10px; flex: 1; min-width: 280px; }
+    input, select, button { width: 100%; margin: 5px 0; padding: 8px; border-radius: 5px; border: none; box-sizing: border-box; }
+    button { background: #38bdf8; color: black; cursor: pointer; font-weight: bold; }
+    button:hover { background: #0ea5e9; }
+    table { width: 100%; margin-top: 10px; border-collapse: collapse; }
+    th, td { border: 1px solid #334155; padding: 8px; text-align: center; }
+    th { background: #0f172a; }
+    .metrics { display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap; }
+    .metric-box { background: #1e293b; padding: 12px; border-radius: 8px; flex: 1; text-align: center; min-width: 120px; }
+    .metric-box h2 { margin: 0; color: #38bdf8; font-size: 1.8em; }
+    .metric-box p { margin: 4px 0 0; font-size: 0.85em; color: #94a3b8; }
+    canvas { max-height: 300px; }
+  </style>
+</head>
+<body>
+
+<h1>Smart Process Scheduling System</h1>
+
+<div class="metrics">
+  <div class="metric-box"><h2 id="mPending">0</h2><p>Pending Processes</p></div>
+  <div class="metric-box"><h2 id="mCompleted">0</h2><p>Completed</p></div>
+  <div class="metric-box"><h2 id="mAvgWait">0</h2><p>Avg Wait Time</p></div>
+  <div class="metric-box"><h2 id="mAvgTurn">0</h2><p>Avg Turnaround</p></div>
+</div>
+
+<div class="container">
+  <div class="card">
+    <h3>Submit Process</h3>
+    <input id="pid" placeholder="Process ID (e.g. P1)">
+    <input id="arrival" type="number" placeholder="Arrival Time" min="0" value="0">
+    <input id="burst" type="number" placeholder="Estimated Burst Time" min="1">
+    <select id="priority">
+      <option value="high">High Priority</option>
+      <option value="medium" selected>Medium Priority</option>
+      <option value="low">Low Priority</option>
+    </select>
+    <select id="ptype">
+      <option value="cpu">CPU-bound</option>
+      <option value="io">I/O-bound</option>
+    </select>
+    <button onclick="submitProcess()">Submit Process</button>
+    <h4>Process Queue</h4>
+    <table id="queueTable">
+      <tr><th>PID</th><th>Arrival</th><th>Burst</th><th>Priority</th><th>Type</th></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Run Scheduler</h3>
+    <select id="algorithm">
+      <option value="FCFS">FCFS</option>
+      <option value="SJF">SJF (ML-Predicted)</option>
+      <option value="Priority">Priority Scheduling</option>
+      <option value="RoundRobin">Round Robin (Q=4)</option>
+    </select>
+    <button onclick="runScheduler()">Schedule Processes</button>
+    <button onclick="clearAll()" style="background:#ef4444; color:white; margin-top:6px;">Clear All</button>
+    <h4>Scheduling Result</h4>
+    <table id="schedTable">
+      <tr><th>PID</th><th>Burst</th><th>Wait</th><th>Turnaround</th></tr>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 20px;">
+  <h3>Performance Chart</h3>
+  <canvas id="chart"></canvas>
+</div>
+
+<div class="card" style="margin-top: 20px;">
+  <h3>Gantt Chart</h3>
+  <div id="gantt" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:10px;"></div>
+</div>
+
+<script>
+const processes = [];
+const colors = ["#38bdf8","#f97316","#22c55e","#a855f7","#ec4899","#facc15","#14b8a6","#f43f5e"];
+let chartInstance = null;
+
+// ML burst prediction
+function predictBurst(type, priority, enteredBurst) {
+  const typeFactor = type === "cpu" ? 1.1 : 0.75;
+  const priorityFactor = { high: 0.85, medium: 1.0, low: 1.2 };
+  return Math.round(enteredBurst * typeFactor * (priorityFactor[priority] || 1.0));
+}
+
+function submitProcess() {
+  const pid = document.getElementById("pid").value.trim();
+  const arrival = parseFloat(document.getElementById("arrival").value) || 0;
+  const burst = parseFloat(document.getElementById("burst").value);
+  const priority = document.getElementById("priority").value;
+  const ptype = document.getElementById("ptype").value;
+
+  if (!pid || !burst || burst <= 0) { alert("Please enter a valid Process ID and Burst Time."); return; }
+  if (processes.find(p => p.pid === pid)) { alert("Process ID already exists."); return; }
+
+  const predicted = predictBurst(ptype, priority, burst);
+  processes.push({ pid, arrival, burst, predicted, priority, ptype, remaining: predicted });
+
+  const table = document.getElementById("queueTable");
+  table.innerHTML = "<tr><th>PID</th><th>Arrival</th><th>Burst</th><th>Priority</th><th>Type</th></tr>";
+  processes.forEach(p => {
+    table.innerHTML += `<tr><td>${p.pid}</td><td>${p.arrival}</td><td>${p.burst}</td><td>${p.priority}</td><td>${p.ptype}</td></tr>`;
+  });
+
+  document.getElementById("pid").value = "";
+  document.getElementById("burst").value = "";
+  document.getElementById("mPending").textContent = processes.length;
+}
+
+function runScheduler() {
+  if (processes.length === 0) { alert("No processes in queue."); return; }
+  const algorithm = document.getElementById("algorithm").value;
+  let result = [];
+
+  const ps = processes.map(p => ({ ...p, remaining: p.predicted }));
+
+  if (algorithm === "FCFS") {
+    ps.sort((a, b) => a.arrival - b.arrival);
+    let time = 0;
+    result = ps.map(p => {
+      if (time < p.arrival) time = p.arrival;
+      const wait = time - p.arrival;
+      const turnaround = wait + p.predicted;
+      time += p.predicted;
+      return { ...p, wait_time: wait, turnaround };
+    });
+
+  } else if (algorithm === "SJF") {
+    ps.sort((a, b) => a.arrival - b.arrival);
+    let time = 0, done = [], remaining = [...ps];
+    while (remaining.length > 0) {
+      const available = remaining.filter(p => p.arrival <= time);
+      if (available.length === 0) { time = remaining[0].arrival; continue; }
+      available.sort((a, b) => a.predicted - b.predicted);
+      const p = available[0];
+      remaining = remaining.filter(x => x.pid !== p.pid);
+      const wait = time - p.arrival;
+      const turnaround = wait + p.predicted;
+      time += p.predicted;
+      done.push({ ...p, wait_time: wait, turnaround });
+    }
+    result = done;
+
+  } else if (algorithm === "Priority") {
+    const priorityMap = { high: 1, medium: 2, low: 3 };
+    ps.sort((a, b) => priorityMap[a.priority] - priorityMap[b.priority] || a.arrival - b.arrival);
+    let time = 0;
+    result = ps.map(p => {
+      if (time < p.arrival) time = p.arrival;
+      const wait = time - p.arrival;
+      const turnaround = wait + p.predicted;
+      time += p.predicted;
+      return { ...p, wait_time: wait, turnaround };
+    });
+
+  } else if (algorithm === "RoundRobin") {
+    const quantum = 4;
+    const queue = ps.map(p => ({ ...p, remaining: p.predicted, start: -1, finish: 0 }));
+    queue.sort((a, b) => a.arrival - b.arrival);
+    let time = 0, rq = [], idx = 0, done = [];
+    const finishMap = {}, waitMap = {};
+    queue.forEach(p => { finishMap[p.pid] = 0; });
+
+    rq.push(queue[idx++]);
+    while (rq.length > 0) {
+      let p = rq.shift();
+      const exec = Math.min(p.remaining, quantum);
+      p.remaining -= exec;
+      time += exec;
+      while (idx < queue.length && queue[idx].arrival <= time) rq.push(queue[idx++]);
+      if (p.remaining > 0) rq.push(p);
+      else { p.finish = time; done.push(p); }
+    }
+    result = done.map(p => ({
+      ...p,
+      wait_time: p.finish - p.arrival - p.predicted,
+      turnaround: p.finish - p.arrival
+    }));
+  }
+
+  // Render result table
+  const table = document.getElementById("schedTable");
+  table.innerHTML = "<tr><th>PID</th><th>Burst</th><th>Wait</th><th>Turnaround</th></tr>";
+  result.forEach(p => {
+    table.innerHTML += `<tr><td>${p.pid}</td><td>${p.predicted}</td><td>${p.wait_time}</td><td>${p.turnaround}</td></tr>`;
+  });
+
+  // Metrics
+  const avgWait = (result.reduce((s, p) => s + p.wait_time, 0) / result.length).toFixed(1);
+  const avgTurn = (result.reduce((s, p) => s + p.turnaround, 0) / result.length).toFixed(1);
+  document.getElementById("mCompleted").textContent = result.length;
+  document.getElementById("mAvgWait").textContent = avgWait;
+  document.getElementById("mAvgTurn").textContent = avgTurn;
+
+  drawChart(result);
+  drawGantt(result);
+}
+
+function drawChart(data) {
+  if (chartInstance) chartInstance.destroy();
+  const ctx = document.getElementById("chart").getContext("2d");
+  chartInstance = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: data.map(p => p.pid),
+      datasets: [
+        { label: "Burst Time", data: data.map(p => p.predicted), backgroundColor: "#38bdf8" },
+        { label: "Wait Time", data: data.map(p => p.wait_time), backgroundColor: "#f97316" },
+        { label: "Turnaround", data: data.map(p => p.turnaround), backgroundColor: "#22c55e" }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: "white" } } },
+      scales: {
+        x: { ticks: { color: "white" }, grid: { color: "#334155" } },
+        y: { ticks: { color: "white" }, grid: { color: "#334155" } }
+      }
+    }
+  });
+}
+
+function drawGantt(data) {
+  const gantt = document.getElementById("gantt");
+  gantt.innerHTML = "";
+  data.forEach((p, i) => {
+    const block = document.createElement("div");
+    block.style.cssText = `background:${colors[i % colors.length]};color:#000;padding:8px 14px;border-radius:6px;font-weight:bold;font-size:0.85em;`;
+    block.innerHTML = `${p.pid}<br><span style="font-size:0.8em;font-weight:normal;">T:${p.turnaround}</span>`;
+    gantt.appendChild(block);
+  });
+}
+
+function clearAll() {
+  processes.length = 0;
+  document.getElementById("queueTable").innerHTML = "<tr><th>PID</th><th>Arrival</th><th>Burst</th><th>Priority</th><th>Type</th></tr>";
+  document.getElementById("schedTable").innerHTML = "<tr><th>PID</th><th>Burst</th><th>Wait</th><th>Turnaround</th></tr>";
+  document.getElementById("gantt").innerHTML = "";
+  document.getElementById("mPending").textContent = "0";
+  document.getElementById("mCompleted").textContent = "0";
+  document.getElementById("mAvgWait").textContent = "0";
+  document.getElementById("mAvgTurn").textContent = "0";
+  if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+}
+</script>
+</body>
+</html>
